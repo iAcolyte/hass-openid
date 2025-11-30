@@ -8,6 +8,9 @@ import secrets
 from typing import Any
 import urllib.parse
 
+import hashlib
+import os
+
 from aiohttp.web import HTTPFound, Request, Response
 from yarl import URL
 
@@ -41,17 +44,31 @@ class OpenIDAuthorizeView(HomeAssistantView):
         """Initialize the authorisation view."""
         self.hass = hass
 
+    def create_code_verifier_and_challenge(self) -> tuple[str, str]:
+        """Генерирует code_verifier и code_challenge (S256)."""
+        # 1. Генерируем code_verifier
+        code_verifier = (
+            base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode("utf-8")
+        )
+        # 2. Вычисляем code_challenge
+        hashed = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+        code_challenge = base64.urlsafe_b64encode(hashed).rstrip(b"=").decode("utf-8")
+        return code_verifier, code_challenge  # Возвращаем оба значения
+
     async def get(self, request: Request) -> Response:
         """Redirect the browser to the IdP’s authorisation endpoint."""
         conf: dict[str, str] = self.hass.data[DOMAIN]
 
         state = secrets.token_urlsafe(24)
+        code_verifier, code_challenge = self.create_code_verifier_and_challenge()
 
         params = request.rel_url.query
         base_url = params.get("base_url", "")
         redirect_uri = str(URL(base_url).with_path("/auth/openid/callback"))
 
-        self.hass.data["_openid_state"][state] = params
+        stored_data = dict(params)
+        stored_data["code_verifier"] = code_verifier
+        self.hass.data["_openid_state"][state] = stored_data
 
         query = {
             "response_type": "code",
@@ -59,6 +76,8 @@ class OpenIDAuthorizeView(HomeAssistantView):
             "redirect_uri": redirect_uri,
             "scope": conf.get(CONF_SCOPE, ""),
             "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
         }
         encoded_query = urllib.parse.urlencode(query)
         url = conf[CONF_AUTHORIZE_URL] + "?" + encoded_query
@@ -102,7 +121,7 @@ class OpenIDCallbackView(HomeAssistantView):
                 alert_type="error",
                 alert_message="OpenID login failed! Invalid state parameter.",
             )
-
+        code_verifier = pending.get("code_verifier")
         conf: dict[str, str] = self.hass.data[DOMAIN]
         base_url = params.get("base_url", "")
         redirect_uri = str(URL(base_url).with_path("/auth/openid/callback"))
@@ -117,6 +136,7 @@ class OpenIDCallbackView(HomeAssistantView):
                 client_id=conf[CONF_CLIENT_ID],
                 client_secret=conf[CONF_CLIENT_SECRET],
                 redirect_uri=redirect_uri,
+                code_verifier=code_verifier,
                 use_header_auth=conf.get(CONF_USE_HEADER_AUTH, True),
             )
 
@@ -147,7 +167,7 @@ class OpenIDCallbackView(HomeAssistantView):
         user: User = None
         for u in users:
             for cred in u.credentials:
-                if cred.data.get("username") and cred.data.get("username").lower() == username.lower():
+                if cred.data.get("username") == username:
                     user = u
                     break
 

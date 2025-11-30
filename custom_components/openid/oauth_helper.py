@@ -19,6 +19,7 @@ async def exchange_code_for_token(
     client_id: str,
     client_secret: str,
     redirect_uri: str,
+    code_verifier: str,
     use_header_auth: bool = True,
 ) -> dict[str, Any]:
     """Exchange the *authorisation code* for tokens at the IdP."""
@@ -28,6 +29,7 @@ async def exchange_code_for_token(
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
     }
 
     if use_header_auth:
